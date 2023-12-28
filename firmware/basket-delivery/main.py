@@ -20,17 +20,25 @@ import json
 from machine import UART, Pin
 
 from XRPLib.differential_drive import DifferentialDrive
+from XRPLib.servo import Servo
 
 # ------------------------------------------------------------------------------
 # Globals
 
 # Settings
+SERVO_PORT = 1
 UART_BAUDRATE = 115200
-TURN_SPEED = 15.0
-DRIVE_SPEED = 20.0
-BASKET_X_DEADZONE = 0.05        # Basket center X can be lined up 0.5 +/- 0.05
+TURN_SPEED = 15.0               # Drive speed when turning/searching
+DRIVE_SPEED = 20.0              # Drive speed when not bound by distance
+MAX_EFFORT = 0.4                # Drive speed when driving by distance
+BASKET_X_DEADZONE = 0.03        # Basket center X can be lined up 0.5 +/- 0.03
 BASKET_Y_TARGET = 0.8           # Basket center Y should be 0.8
 BASKET_Y_DEADZONE = 0.05        # Basket center Y can be lined up 0.8 +/- 0.05
+SERVO_HOME = 180.0              # Arm in the collapsed position (degrees)
+SERVO_PICKUP = 12.0             # Arm in the pickup position (degrees)
+SERVO_CARRY = 40.0              # Arm in the carry basket position (degrees)
+PICKUP_TURN_DEGREES = 180.0     # How many degrees to turn to pick up basket
+PICKUP_DISTANCE = 18.0          # How far to drive backwards to get basket (cm)
 
 # Configure UART
 uart = UART(
@@ -41,8 +49,9 @@ uart = UART(
     timeout=200,
 )
 
-# Configure encoded motors
+# Configure encoded motors and servo
 drivetrain = DifferentialDrive.get_default_differential_drive()
+servo = Servo.get_default_servo(SERVO_PORT)
 
 # State machine to control robot's behaviors
 # 0: Look for the basket
@@ -95,6 +104,15 @@ def get_bboxes(uart):
 # ------------------------------------------------------------------------------
 # Main
 
+# Setup
+servo.set_angle(SERVO_HOME)
+drivetrain.set_speed(
+    left_speed=0.0,
+    right_speed=0.0,
+)
+time.sleep(2.0)
+
+# Loop
 while True:
     
     # Always receive bounding box info on each iteration
@@ -182,4 +200,32 @@ while True:
         
     # State 2: pick up basket
     elif current_state == 2:
-        print("done")
+        
+        # Turn around 180 degrees
+        drivetrain.turn(
+            turn_degrees=PICKUP_TURN_DEGREES,
+            max_effort=MAX_EFFORT,
+        )
+        
+        # Deploy arm
+        servo.set_angle(SERVO_PICKUP)
+        
+        # Drive backwards to pick up basket
+        drivetrain.straight(
+            distance=PICKUP_DISTANCE,
+            max_effort=-MAX_EFFORT,
+        )
+        
+        # Pick up basket
+        servo.set_angle(SERVO_CARRY)
+        time.sleep(1.0)
+        
+        # Turn back around
+        drivetrain.turn(
+            turn_degrees=-PICKUP_TURN_DEGREES,
+            max_effort=MAX_EFFORT,
+        )
+        
+        while True:
+            print("done")
+            time.sleep(1.0)
