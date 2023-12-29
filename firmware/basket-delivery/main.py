@@ -29,11 +29,11 @@ from XRPLib.servo import Servo
 # Settings
 SERVO_PORT = 1
 UART_BAUDRATE = 115200
-RESTART_WAIT = 2.0              # How long to wait for Coral Micro to boot (sec)
-SEARCH_TURN_SPEED = 18.0        # Drive speed when searching
+RESTART_WAIT = 5.0              # How long to wait for Coral Micro to boot (sec)
+SEARCH_TURN_SPEED = 20.0        # Drive speed when searching
 LINEUP_TURN_SPEED = 12.0        # Drive speed when lining up object
 DRIVE_SPEED = 20.0              # Drive speed when not bound by distance
-MAX_EFFORT = 0.4                # Drive speed when driving by distance
+MAX_EFFORT = 0.5                # Drive speed when driving by distance
 BASKET_X_TARGET = 0.4           # Where the basket X should be for pickup
 BASKET_X_DEADZONE = 0.02        # Basket center X can be lined up +/- this val
 BASKET_Y_TARGET = 0.82          # Where the basket Y should be for pickup
@@ -45,9 +45,8 @@ TARGET_Y_DEADZONE = 0.05        # Target center Y can be lined up +/- this val
 SERVO_HOME = 180.0              # Arm in the collapsed position (degrees)
 SERVO_PICKUP = 12.0             # Arm in the pickup position (degrees)
 SERVO_CARRY = 40.0              # Arm in the carry basket position (degrees)
-PICKUP_TURN_DEGREES = 180.0     # How many degrees to turn to pick up basket
+PICKUP_INCREMENTS = 10          # Perform servo lift in increments
 PICKUP_DISTANCE = 18.0          # How far to drive backwards to get basket (cm)
-DROPOFF_TURN_DEGREES = 180.0    # How many degrees to turn to drop off basket
 DROPOFF_DISTANCE = 15.0         # How far to drive backwards to drop off (cm)
 VICTORY_TURN_DEGREES = 90.0     # How far to dance
 NUM_VICTORY_TURNS = 2           # How many back and forth turns to do
@@ -174,7 +173,9 @@ def main():
     wait_counter = 0
 
     # Wait for Coral Micro to start running
+    print("Waiting for Coral Micro to boot...")
     time.sleep(RESTART_WAIT)
+    print("Go!")
 
     # Loop
     while True:
@@ -282,11 +283,12 @@ def main():
             )
             
             # Pick up basket (somewhat slowly)
-            for i in range(4):
+            period = 1 / PICKUP_INCREMENTS
+            for i in range(PICKUP_INCREMENTS):
                 servo.set_angle(
-                    ((SERVO_CARRY - SERVO_PICKUP) * (0.25 * i)) + SERVO_PICKUP
+                    ((SERVO_CARRY - SERVO_PICKUP) * (period * i)) + SERVO_PICKUP
                 )
-                time.sleep(0.2)
+                time.sleep(period)
             servo.set_angle(SERVO_CARRY)
             time.sleep(1.0)
             
