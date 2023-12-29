@@ -30,7 +30,7 @@ SERVO_PORT = 1
 UART_BAUDRATE = 115200
 TURN_SPEED = 15.0               # Drive speed when turning/searching
 DRIVE_SPEED = 20.0              # Drive speed when not bound by distance
-MAX_EFFORT = 0.4                # Drive speed when driving by distance
+MAX_EFFORT = 0.4               # Drive speed when driving by distance
 BASKET_X_DEADZONE = 0.03        # Basket center X can be lined up 0.5 +/- 0.03
 BASKET_Y_TARGET = 0.8           # Basket center Y should be 0.8
 BASKET_Y_DEADZONE = 0.05        # Basket center Y can be lined up 0.8 +/- 0.05
@@ -44,8 +44,12 @@ PICKUP_TURN_DEGREES = 180.0     # How many degrees to turn to pick up basket
 PICKUP_DISTANCE = 18.0          # How far to drive backwards to get basket (cm)
 DROPOFF_TURN_DEGREES = 180.0    # How many degrees to turn to drop off basket
 DROPOFF_DISTANCE = 18.0         # How far to drive backwards to drop off (cm)
-VICTORY_MAX_EFFORT = 0.8        # How hard to dance
+VICTORY_TURN_DEGREES = 90.0     # How far to dance
 NUM_VICTORY_TURNS = 5           # How many back and forth turns to do
+
+# Magical empirical constant to perform degrees of robot rotation using
+# encoder raw output (warning: not accurate)
+WHEEL_ROT_PER_ROBOT_ROT = 2.42
 
 # Configure UART
 uart = UART(
@@ -70,7 +74,7 @@ servo = Servo.get_default_servo(SERVO_PORT)
 # 6: Victory dance
 # 7: Do nothing
 current_state = 0
-
+    
 # ------------------------------------------------------------------------------
 # Functions
 
@@ -108,6 +112,37 @@ def get_bboxes(uart):
             
     
     return (bbox_basket, bbox_target)
+
+def turn(drivetrain, degrees):
+    """
+    Very hacky way of turning: simply measure one encoder until it reaches a set
+    point. This is because drivetrain.turn() is bugged and enter a forever loop
+    of turning. Warning: this function is not very accurate!
+    """
+    
+    # Get starting positions
+    left_start = drivetrain.left_motor.get_position()
+    right_start = drivetrain.right_motor.get_position()
+    
+    # Set direction and speed
+    if degrees == 0.0:
+        return
+    elif degrees > 0.0:
+        drivetrain.set_speed(left_speed=TURN_SPEED, right_speed=-TURN_SPEED)
+        target_pos = (degrees / 360) * WHEEL_ROT_PER_ROBOT_ROT
+    elif degrees < 0.0:
+        drivetrain.set_speed(left_speed=-TURN_SPEED, right_speed=TURN_SPEED)
+        target_pos = -(degrees / 360) * WHEEL_ROT_PER_ROBOT_ROT
+        
+    # Turn until desired position
+    while True:
+        left_pos = drivetrain.left_motor.get_position()
+        right_pos = drivetrain.right_motor.get_position()
+        if (abs(left_pos - left_start) >= target_pos) or \
+            (abs(right_pos - right_start) >= target_pos):
+            break
+
+    drivetrain.set_speed(left_speed=0.0, right_speed=0.0)
 
 # ------------------------------------------------------------------------------
 # Main
@@ -203,17 +238,15 @@ while True:
                 left_speed=0.0,
                 right_speed=0.0,
             )
+            time.sleep(1.0)
             current_state = 2
             continue
         
     # State 2: pick up basket
     elif current_state == 2:
         
-        # Turn around 180 degrees
-        drivetrain.turn(
-            turn_degrees=PICKUP_TURN_DEGREES,
-            max_effort=MAX_EFFORT,
-        )
+        # Turn around
+        turn(drivetrain, PICKUP_TURN_DEGREES)
         
         # Deploy arm
         servo.set_angle(SERVO_PICKUP)
@@ -225,26 +258,23 @@ while True:
         )
         
         # Pick up basket
+        servo.set_angle(((SERVO_CARRY - SERVO_PICKUP) * 0.5) + SERVO_PICKUP)
+        time.sleep(0.2)
         servo.set_angle(SERVO_CARRY)
         time.sleep(1.0)
         
         # Turn back around
-        drivetrain.turn(
-            turn_degrees=-PICKUP_TURN_DEGREES,
-            max_effort=MAX_EFFORT,
-        )
+        turn(drivetrain, -PICKUP_TURN_DEGREES)
         
         # Continue to state 3
+        print("Searching for target...")
         current_state = 3
         continue
         
     # State 3: look for the target
     elif current_state == 3:
         
-        # If the basket is still in view, we need to try picking it up again
-        current_state = 1
-        
-        # See if there is a basket in view
+        # See if there is a target zone in view
         if bbox_target:
             print("Target found")
             drivetrain.set_speed(
@@ -324,11 +354,8 @@ while True:
     # State 5: drop off basket
     elif current_state == 5:
         
-        # Turn around 180 degrees
-        drivetrain.turn(
-            turn_degrees=DROPOFF_TURN_DEGREES,
-            max_effort=MAX_EFFORT,
-        )
+        # Turn around
+        turn(drivetrain, DROPOFF_TURN_DEGREES)
         
         # Drive backwards to position basket in target zone
         drivetrain.straight(
@@ -347,10 +374,7 @@ while True:
         )
         
         # Turn back around
-        drivetrain.turn(
-            turn_degrees=-PICKUP_TURN_DEGREES,
-            max_effort=MAX_EFFORT,
-        )
+        turn(drivetrain, -DROPOFF_TURN_DEGREES)
         
         # Continue to state 6
         current_state = 6
@@ -359,25 +383,9 @@ while True:
     # State 6: victory dance!
     elif current_state == 6:
         for i in range(NUM_VICTORY_TURNS):
-            drivetrain.set_effort(
-                left_effort=VICTORY_MAX_EFFORT,
-                right_effort=-VICTORY_MAX_EFFORT,
-            )
-            time.sleep(1.0)
-            drivetrain.set_speed(
-                left_effort=0.0,
-                right_effort=0.0,
-            )
+            turn(drivetrain, VICTORY_TURN_DEGREES)
             time.sleep(0.2)
-            drivetrain.set_effort(
-                left_effort=-VICTORY_MAX_EFFORT,
-                right_effort=VICTORY_MAX_EFFORT,
-            )
-            time.sleep(1.0)
-            drivetrain.set_speed(
-                left_effort=0.0,
-                right_effort=0.0,
-            )
+            turn(drivetrain, -VICTORY_TURN_DEGREES)
             time.sleep(0.2)
         current_state = 7
         continue
@@ -386,4 +394,4 @@ while True:
     else:
         while True:
             print("All done, please reset me")
-            time.sleep(1.0)
+            time.sleep(5.0)
