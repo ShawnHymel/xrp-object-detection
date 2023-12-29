@@ -16,6 +16,7 @@ License: https://opensource.org/license/0bsd/
 
 import time
 import json
+import sys
 
 from machine import UART, Pin
 
@@ -28,24 +29,28 @@ from XRPLib.servo import Servo
 # Settings
 SERVO_PORT = 1
 UART_BAUDRATE = 115200
-TURN_SPEED = 15.0               # Drive speed when turning/searching
+RESTART_WAIT = 2.0              # How long to wait for Coral Micro to boot (sec)
+SEARCH_TURN_SPEED = 18.0        # Drive speed when searching
+LINEUP_TURN_SPEED = 12.0        # Drive speed when lining up object
 DRIVE_SPEED = 20.0              # Drive speed when not bound by distance
-MAX_EFFORT = 0.4               # Drive speed when driving by distance
-BASKET_X_DEADZONE = 0.03        # Basket center X can be lined up 0.5 +/- 0.03
-BASKET_Y_TARGET = 0.8           # Basket center Y should be 0.8
-BASKET_Y_DEADZONE = 0.05        # Basket center Y can be lined up 0.8 +/- 0.05
-TARGET_X_DEADZONE = 0.03        # Target center X can be lined up 0.5 +/- 0.03
-TARGET_Y_TARGET = 0.8           # Target center Y should be 0.8
-TARGET_Y_DEADZONE = 0.05        # Target center Y can be lined up 0.8 +/- 0.05
+MAX_EFFORT = 0.4                # Drive speed when driving by distance
+BASKET_X_TARGET = 0.4           # Where the basket X should be for pickup
+BASKET_X_DEADZONE = 0.02        # Basket center X can be lined up +/- this val
+BASKET_Y_TARGET = 0.82          # Where the basket Y should be for pickup
+BASKET_Y_DEADZONE = 0.02        # Basket center Y can be lined up +/- this val
+TARGET_X_TARGET = 0.36          # Where the target X should be for dropoff
+TARGET_X_DEADZONE = 0.02        # Target center X can be lined up +/- this val
+TARGET_Y_TARGET = 0.8           # Where the target Y should be for dropoff
+TARGET_Y_DEADZONE = 0.05        # Target center Y can be lined up +/- this val
 SERVO_HOME = 180.0              # Arm in the collapsed position (degrees)
 SERVO_PICKUP = 12.0             # Arm in the pickup position (degrees)
 SERVO_CARRY = 40.0              # Arm in the carry basket position (degrees)
 PICKUP_TURN_DEGREES = 180.0     # How many degrees to turn to pick up basket
 PICKUP_DISTANCE = 18.0          # How far to drive backwards to get basket (cm)
 DROPOFF_TURN_DEGREES = 180.0    # How many degrees to turn to drop off basket
-DROPOFF_DISTANCE = 18.0         # How far to drive backwards to drop off (cm)
+DROPOFF_DISTANCE = 15.0         # How far to drive backwards to drop off (cm)
 VICTORY_TURN_DEGREES = 90.0     # How far to dance
-NUM_VICTORY_TURNS = 5           # How many back and forth turns to do
+NUM_VICTORY_TURNS = 2           # How many back and forth turns to do
 
 # Magical empirical constant to perform degrees of robot rotation using
 # encoder raw output (warning: not accurate)
@@ -128,10 +133,16 @@ def turn(drivetrain, degrees):
     if degrees == 0.0:
         return
     elif degrees > 0.0:
-        drivetrain.set_speed(left_speed=TURN_SPEED, right_speed=-TURN_SPEED)
+        drivetrain.set_speed(
+            left_speed=SEARCH_TURN_SPEED,
+            right_speed=-SEARCH_TURN_SPEED
+        )
         target_pos = (degrees / 360) * WHEEL_ROT_PER_ROBOT_ROT
     elif degrees < 0.0:
-        drivetrain.set_speed(left_speed=-TURN_SPEED, right_speed=TURN_SPEED)
+        drivetrain.set_speed(
+            left_speed=-SEARCH_TURN_SPEED,
+            right_speed=SEARCH_TURN_SPEED
+        )
         target_pos = -(degrees / 360) * WHEEL_ROT_PER_ROBOT_ROT
         
     # Turn until desired position
@@ -147,251 +158,278 @@ def turn(drivetrain, degrees):
 # ------------------------------------------------------------------------------
 # Main
 
-# Setup
-servo.set_angle(SERVO_HOME)
-drivetrain.set_speed(
-    left_speed=0.0,
-    right_speed=0.0,
-)
-time.sleep(2.0)
+def main():
+    
+    global uart
+    global drivetrain
+    global servo
+    global current_state
+    
+    # Setup
+    servo.set_angle(SERVO_HOME)
+    drivetrain.set_speed(
+        left_speed=0.0,
+        right_speed=0.0,
+    )
+    wait_counter = 0
 
-# Loop
-while True:
-    
-    # Always receive bounding box info on each iteration
-    bbox_basket, bbox_target = get_bboxes(uart)
-    
-    # State 0: look for the basket
-    if current_state == 0:
+    # Wait for Coral Micro to start running
+    time.sleep(RESTART_WAIT)
+
+    # Loop
+    while True:
         
-        # See if there is a basket in view
-        if bbox_basket:
-            print("Basket found")
-            drivetrain.set_speed(
-                left_speed=0.0,
-                right_speed=0.0,
-            )
-            current_state = 1
-            continue
+        # Always receive bounding box info on each iteration
+        bbox_basket, bbox_target = get_bboxes(uart)
         
-        # If not, rotate the robot
-        drivetrain.set_speed(
-            left_speed=TURN_SPEED,
-            right_speed=-TURN_SPEED,
-        )
-        
-    # State 1: drive toward the basket
-    elif current_state == 1:
-        
-        # Find basket bounding box
-        if bbox_basket is None:
-            print("Basket lost. Searching...")
-            current_state = 0
-            continue
-        
-        # Get coordinates of basket
-        width = bbox_basket["xmax"] - bbox_basket["xmin"]
-        height = bbox_basket["ymax"] - bbox_basket["ymin"]
-        x_center = bbox_basket["xmin"] + (width / 2.0)
-        y_center = bbox_basket["ymin"] + (height / 2.0)
-        
-        # Print debug string
-        print(f"Lining up basket: ({x_center:.3f}, {y_center:.3f})")
-        
-        # Line up basket in the horizontal center of the frame
-        x_done = False
-        if x_center < (0.5 - BASKET_X_DEADZONE):
-            drivetrain.set_speed(
-                left_speed=-TURN_SPEED,
-                right_speed=TURN_SPEED,
-            )
-        elif x_center > (0.5 + BASKET_X_DEADZONE):
-            drivetrain.set_speed(
-                left_speed=TURN_SPEED,
-                right_speed=-TURN_SPEED,
-            )
-        else:
-            drivetrain.set_speed(
-                left_speed=0.0,
-                right_speed=0.0
-            )
-            x_done = True
+        # State 0: look for the basket
+        if current_state == 0:
             
-        # Keep lining up x if needed
-        if not x_done:
-            continue
+            # See if there is a basket in view
+            if bbox_basket:
+                print("Basket found")
+                drivetrain.set_speed(
+                    left_speed=0.0,
+                    right_speed=0.0,
+                )
+                current_state = 1
+                continue
             
-        # If X is lined up, line up Y
-        if y_center < (BASKET_Y_TARGET - BASKET_Y_DEADZONE):
+            # If not, rotate the robot
             drivetrain.set_speed(
-                left_speed=DRIVE_SPEED,
-                right_speed=DRIVE_SPEED,
+                left_speed=SEARCH_TURN_SPEED,
+                right_speed=-SEARCH_TURN_SPEED,
             )
-        elif y_center > (BASKET_Y_TARGET + BASKET_Y_DEADZONE):
-            drivetrain.set_speed(
-                left_speed=-DRIVE_SPEED,
-                right_speed=-DRIVE_SPEED,
+            
+        # State 1: drive toward the basket
+        elif current_state == 1:
+            
+            # Find basket bounding box
+            if bbox_basket is None:
+                print("Basket lost. Searching...")
+                current_state = 0
+                continue
+            
+            # Get coordinates of basket
+            width = bbox_basket["xmax"] - bbox_basket["xmin"]
+            height = bbox_basket["ymax"] - bbox_basket["ymin"]
+            x_center = bbox_basket["xmin"] + (width / 2.0)
+            y_center = bbox_basket["ymin"] + (height / 2.0)
+            
+            # Print debug string
+            print(f"Lining up basket: ({x_center:.3f}, {y_center:.3f})")
+            
+            # Line up basket in the horizontal center of the frame
+            x_done = False
+            if x_center < (BASKET_X_TARGET - BASKET_X_DEADZONE):
+                drivetrain.set_speed(
+                    left_speed=-LINEUP_TURN_SPEED,
+                    right_speed=LINEUP_TURN_SPEED,
+                )
+            elif x_center > (BASKET_X_TARGET + BASKET_X_DEADZONE):
+                drivetrain.set_speed(
+                    left_speed=LINEUP_TURN_SPEED,
+                    right_speed=-LINEUP_TURN_SPEED,
+                )
+            else:
+                drivetrain.set_speed(
+                    left_speed=0.0,
+                    right_speed=0.0
+                )
+                x_done = True
+                
+            # Keep lining up x if needed
+            if not x_done:
+                continue
+                
+            # If X is lined up, line up Y
+            if y_center < (BASKET_Y_TARGET - BASKET_Y_DEADZONE):
+                drivetrain.set_speed(
+                    left_speed=DRIVE_SPEED,
+                    right_speed=DRIVE_SPEED,
+                )
+                wait_counter = 0
+            elif y_center > (BASKET_Y_TARGET + BASKET_Y_DEADZONE):
+                drivetrain.set_speed(
+                    left_speed=-DRIVE_SPEED,
+                    right_speed=-DRIVE_SPEED,
+                )
+                wait_counter = 0
+            else:
+                
+                # Make sure basket is lined up 5 times in a row
+                wait_counter += 1
+                if wait_counter >= 5:
+                    print(f"Getting basket: ({x_center:.3f}, {y_center:.3f})")
+                    drivetrain.set_speed(
+                        left_speed=0.0,
+                        right_speed=0.0,
+                    )
+                    time.sleep(1.0)
+                    current_state = 2
+                    continue
+            
+        # State 2: pick up basket
+        elif current_state == 2:
+            
+            # Deploy arm
+            servo.set_angle(SERVO_PICKUP)
+            
+            # Drive forward to pick up basket
+            drivetrain.straight(
+                distance=PICKUP_DISTANCE,
+                max_effort=MAX_EFFORT,
             )
-        else:
-            print("Basket is lined up")
-            drivetrain.set_speed(
-                left_speed=0.0,
-                right_speed=0.0,
-            )
+            
+            # Pick up basket (somewhat slowly)
+            for i in range(4):
+                servo.set_angle(
+                    ((SERVO_CARRY - SERVO_PICKUP) * (0.25 * i)) + SERVO_PICKUP
+                )
+                time.sleep(0.2)
+            servo.set_angle(SERVO_CARRY)
             time.sleep(1.0)
-            current_state = 2
-            continue
-        
-    # State 2: pick up basket
-    elif current_state == 2:
-        
-        # Turn around
-        turn(drivetrain, PICKUP_TURN_DEGREES)
-        
-        # Deploy arm
-        servo.set_angle(SERVO_PICKUP)
-        
-        # Drive backwards to pick up basket
-        drivetrain.straight(
-            distance=PICKUP_DISTANCE,
-            max_effort=-MAX_EFFORT,
-        )
-        
-        # Pick up basket
-        servo.set_angle(((SERVO_CARRY - SERVO_PICKUP) * 0.5) + SERVO_PICKUP)
-        time.sleep(0.2)
-        servo.set_angle(SERVO_CARRY)
-        time.sleep(1.0)
-        
-        # Turn back around
-        turn(drivetrain, -PICKUP_TURN_DEGREES)
-        
-        # Continue to state 3
-        print("Searching for target...")
-        current_state = 3
-        continue
-        
-    # State 3: look for the target
-    elif current_state == 3:
-        
-        # See if there is a target zone in view
-        if bbox_target:
-            print("Target found")
-            drivetrain.set_speed(
-                left_speed=0.0,
-                right_speed=0.0,
-            )
-            current_state = 4
-            continue
-        
-        # If not, rotate the robot
-        drivetrain.set_speed(
-            left_speed=TURN_SPEED,
-            right_speed=-TURN_SPEED,
-        )
-        
-    # State 4: drive toward the target
-    elif current_state == 4:
-        
-        # Find basket bounding box
-        if bbox_target is None:
-            print("Target lost. Searching...")
+            
+            # Continue to state 3
+            print("Searching for target...")
             current_state = 3
             continue
-        
-        # Get coordinates of target
-        width = bbox_target["xmax"] - bbox_target["xmin"]
-        height = bbox_target["ymax"] - bbox_target["ymin"]
-        x_center = bbox_target["xmin"] + (width / 2.0)
-        y_center = bbox_target["ymin"] + (height / 2.0)
-        
-        # Print debug string
-        print(f"Lining up target: ({x_center:.3f}, {y_center:.3f})")
-        
-        # Line up target in the horizontal center of the frame
-        x_done = False
-        if x_center < (0.5 - TARGET_X_DEADZONE):
-            drivetrain.set_speed(
-                left_speed=-TURN_SPEED,
-                right_speed=TURN_SPEED,
-            )
-        elif x_center > (0.5 + TARGET_X_DEADZONE):
-            drivetrain.set_speed(
-                left_speed=TURN_SPEED,
-                right_speed=-TURN_SPEED,
-            )
-        else:
-            drivetrain.set_speed(
-                left_speed=0.0,
-                right_speed=0.0
-            )
-            x_done = True
             
-        # Keep lining up x if needed
-        if not x_done:
-            continue
+        # State 3: look for the target
+        elif current_state == 3:
             
-        # If X is lined up, line up Y
-        if y_center < (TARGET_Y_TARGET - TARGET_Y_DEADZONE):
+            # See if there is a target zone in view
+            if bbox_target:
+                print("Target found")
+                drivetrain.set_speed(
+                    left_speed=0.0,
+                    right_speed=0.0,
+                )
+                current_state = 4
+                continue
+            
+            # If not, rotate the robot
             drivetrain.set_speed(
-                left_speed=DRIVE_SPEED,
-                right_speed=DRIVE_SPEED,
+                left_speed=SEARCH_TURN_SPEED,
+                right_speed=-SEARCH_TURN_SPEED,
             )
-        elif y_center > (TARGET_Y_TARGET + TARGET_Y_DEADZONE):
-            drivetrain.set_speed(
-                left_speed=-DRIVE_SPEED,
-                right_speed=-DRIVE_SPEED,
+            
+        # State 4: drive toward the target
+        elif current_state == 4:
+            
+            # Find basket bounding box
+            if bbox_target is None:
+                print("Target lost. Searching...")
+                current_state = 3
+                continue
+            
+            # Get coordinates of target
+            width = bbox_target["xmax"] - bbox_target["xmin"]
+            height = bbox_target["ymax"] - bbox_target["ymin"]
+            x_center = bbox_target["xmin"] + (width / 2.0)
+            y_center = bbox_target["ymin"] + (height / 2.0)
+            
+            # Print debug string
+            print(f"Lining up target: ({x_center:.3f}, {y_center:.3f})")
+            
+            # Line up target in the horizontal center of the frame
+            x_done = False
+            if x_center < (TARGET_X_TARGET - TARGET_X_DEADZONE):
+                drivetrain.set_speed(
+                    left_speed=-LINEUP_TURN_SPEED,
+                    right_speed=LINEUP_TURN_SPEED,
+                )
+            elif x_center > (TARGET_X_TARGET + TARGET_X_DEADZONE):
+                drivetrain.set_speed(
+                    left_speed=LINEUP_TURN_SPEED,
+                    right_speed=-LINEUP_TURN_SPEED,
+                )
+            else:
+                drivetrain.set_speed(
+                    left_speed=0.0,
+                    right_speed=0.0
+                )
+                x_done = True
+                
+            # Keep lining up x if needed
+            if not x_done:
+                continue
+                
+            # If X is lined up, line up Y
+            if y_center < (TARGET_Y_TARGET - TARGET_Y_DEADZONE):
+                drivetrain.set_speed(
+                    left_speed=DRIVE_SPEED,
+                    right_speed=DRIVE_SPEED,
+                )
+                wait_counter = 0
+            elif y_center > (TARGET_Y_TARGET + TARGET_Y_DEADZONE):
+                drivetrain.set_speed(
+                    left_speed=-DRIVE_SPEED,
+                    right_speed=-DRIVE_SPEED,
+                )
+                wait_counter = 0
+                
+            else:
+                
+                # Make sure basket is lined up 5 times in a row
+                wait_counter += 1
+                if wait_counter >= 5:
+                    print("Target is lined up")
+                    drivetrain.set_speed(
+                        left_speed=0.0,
+                        right_speed=0.0,
+                    )
+                    current_state = 5
+                    continue
+            
+        # State 5: drop off basket
+        elif current_state == 5:
+            
+            # Drive forward to dropoff zone
+            drivetrain.straight(
+                distance=DROPOFF_DISTANCE,
+                max_effort=MAX_EFFORT,
             )
-        else:
-            print("Target is lined up")
-            drivetrain.set_speed(
-                left_speed=0.0,
-                right_speed=0.0,
+            
+            # Drop off basket
+            servo.set_angle(SERVO_PICKUP)
+            time.sleep(1.0)
+            
+            # Back away from dropoff zone
+            drivetrain.straight(
+                distance=DROPOFF_DISTANCE,
+                max_effort=-MAX_EFFORT,
             )
-            current_state = 5
+            
+            # Retract arm
+            servo.set_angle(SERVO_HOME)
+            
+            # Continue to state 6
+            print("Dropoff complete")
+            current_state = 6
             continue
         
-    # State 5: drop off basket
-    elif current_state == 5:
+        # State 6: victory dance!
+        elif current_state == 6:
+            for i in range(NUM_VICTORY_TURNS):
+                turn(drivetrain, VICTORY_TURN_DEGREES)
+                time.sleep(0.2)
+                turn(drivetrain, -VICTORY_TURN_DEGREES)
+                time.sleep(0.2)
+            current_state = 7
+            continue
         
-        # Turn around
-        turn(drivetrain, DROPOFF_TURN_DEGREES)
-        
-        # Drive backwards to position basket in target zone
-        drivetrain.straight(
-            distance=DROPOFF_DISTANCE,
-            max_effort=-MAX_EFFORT,
-        )
-        
-        # Put basket down
-        servo.set_angle(SERVO_PICKUP)
-        time.sleep(1.0)
-        
-        # Drive away from target
-        drivetrain.straight(
-            distance=DROPOFF_DISTANCE,
-            max_effort=MAX_EFFORT,
-        )
-        
-        # Turn back around
-        turn(drivetrain, -DROPOFF_TURN_DEGREES)
-        
-        # Continue to state 6
-        current_state = 6
-        continue
-    
-    # State 6: victory dance!
-    elif current_state == 6:
-        for i in range(NUM_VICTORY_TURNS):
-            turn(drivetrain, VICTORY_TURN_DEGREES)
-            time.sleep(0.2)
-            turn(drivetrain, -VICTORY_TURN_DEGREES)
-            time.sleep(0.2)
-        current_state = 7
-        continue
-    
-    # State 7: all done, do nothing
-    else:
-        while True:
-            print("All done, please reset me")
-            time.sleep(5.0)
+        # State 7: all done, do nothing
+        else:
+            while True:
+                print("All done, please reset me")
+                time.sleep(5.0)
+                
+# Run main and kill motors on exit
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Program done. Stopping...")
+        drivetrain.set_speed(left_speed=0.0, right_speed=0.0)
+        sys.exit(0)
