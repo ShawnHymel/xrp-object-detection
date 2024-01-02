@@ -2,11 +2,11 @@
 
 The [XRP](https://www.digikey.com/en/products/detail/sparkfun-electronics/KIT-22296/19117674) is a fantastic platform for helping students and hobbyists dive into the world of robotics. While the starter sensors are great for beginners, this project aims to add something more advanced to the platform: object detection.
 
-![Object detection on the XRP](images\xrp-object-detection.jpg)
+![Object detection on the XRP](images/xrp-object-detection.jpg)
 
 Object detection is an advanced computer vision concept that involves attempting to identify and locate instances of objects in an image. By adding object detection to the XRP, we can use it to manipulate objects using vision only!
 
-![Identifying objects with the Coral Micro](images\object-detection-example.jpg)
+![Identifying objects with the Coral Micro](images/object-detection-example.jpg)
 
 ## Getting Started
 
